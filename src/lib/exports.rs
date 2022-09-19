@@ -1,26 +1,41 @@
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
-use epub_builder::{EpubBuilder, EpubContent, ZipLibrary};
-use indicatif::{MultiProgress, ProgressBar};
+use super::pdf;
 use crate::lib::cache::ComicCache;
 use crate::lib::cache::EpisodeCache;
 use crate::lib::config::Config;
-use super::pdf;
-use zip::{CompressionMethod, ZipWriter};
+use epub_builder::{EpubBuilder, EpubContent, ZipLibrary};
+use indicatif::{MultiProgress, ProgressBar};
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use zip::write::FileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use simple_xml_builder::XMLElement;
 
 #[enum_dispatch::enum_dispatch(ExportFormatEnum)]
 pub trait ExportFormat {
     fn get_extension(&self) -> &'static str;
     /// 导出单话
-    fn export_single<P: AsRef<Path>>(&self, comic: &ComicCache, episode: &EpisodeCache, path: P, config: &Config);
+    fn export_single<P: AsRef<Path>>(
+        &self,
+        comic: &ComicCache,
+        episode: &EpisodeCache,
+        path: P,
+        config: &Config,
+    );
     /// 导出多话且合并
-    fn export_multiple<P: AsRef<Path>>(&self, comic: &ComicCache, episodes: Vec<&EpisodeCache>, title: &str, path: P, config: &Config, bar: &ProgressBar);
+    fn export_multiple<P: AsRef<Path>>(
+        &self,
+        comic: &ComicCache,
+        episodes: Vec<&EpisodeCache>,
+        title: &str,
+        path: P,
+        config: &Config,
+        bar: &ProgressBar,
+    );
 }
 
 #[enum_dispatch::enum_dispatch]
@@ -33,13 +48,18 @@ pub enum ExportFormatEnum {
 
 pub struct PDF;
 
-
 impl ExportFormat for PDF {
     fn get_extension(&self) -> &'static str {
         "pdf"
     }
 
-    fn export_single<P: AsRef<Path>>(&self, _: &ComicCache, episode: &EpisodeCache, path: P, config: &Config) {
+    fn export_single<P: AsRef<Path>>(
+        &self,
+        _: &ComicCache,
+        episode: &EpisodeCache,
+        path: P,
+        config: &Config,
+    ) {
         let paths = episode.get_paths();
         let doc = pdf::from_images(paths, &episode.title, &episode.title, config.dpi.clone());
         let file = File::create(path.as_ref()).unwrap();
@@ -47,14 +67,32 @@ impl ExportFormat for PDF {
         doc.save(&mut buf).unwrap();
     }
 
-    fn export_multiple<P: AsRef<Path>>(&self, _: &ComicCache, episodes: Vec<&EpisodeCache>, title: &str, path: P, config: &Config, bar: &ProgressBar) {
+    fn export_multiple<P: AsRef<Path>>(
+        &self,
+        _: &ComicCache,
+        episodes: Vec<&EpisodeCache>,
+        title: &str,
+        path: P,
+        config: &Config,
+        bar: &ProgressBar,
+    ) {
         let mut pdf = None;
         for (i, episode) in episodes.iter().enumerate() {
             let paths = episode.get_paths();
             if i == 0 {
-                pdf = Some(pdf::from_images(paths, title, &episode.title, config.dpi.clone()));
+                pdf = Some(pdf::from_images(
+                    paths,
+                    title,
+                    &episode.title,
+                    config.dpi.clone(),
+                ));
             } else {
-                pdf = Some(pdf::append(pdf.unwrap(), paths, &episode.title, config.dpi.clone()));
+                pdf = Some(pdf::append(
+                    pdf.unwrap(),
+                    paths,
+                    &episode.title,
+                    config.dpi.clone(),
+                ));
             }
             bar.inc(1);
         }
@@ -132,7 +170,6 @@ impl ExportFormat for PDF {
 //     }
 // }
 
-
 pub struct Epub {
     pub(crate) cover: Option<Vec<u8>>,
 }
@@ -147,19 +184,42 @@ const CONTENT_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 const STYLE: &str = "body { margin: 0; padding: 0; } img { width: 100%; height: auto; }";
 
 impl Epub {
-    fn make_builder(&self, comic: &ComicCache, title: &str, ord: &Option<f64>) -> EpubBuilder<ZipLibrary> {
+    fn make_builder(
+        &self,
+        comic: &ComicCache,
+        title: &str,
+        ord: &Option<f64>,
+    ) -> EpubBuilder<ZipLibrary> {
         let zip = ZipLibrary::new().unwrap();
         let mut builder = EpubBuilder::new(zip).unwrap();
         if let Some(cover) = self.cover.as_ref() {
-            builder.add_cover_image("images/cover.jpg", cover.as_slice(), "image/jpeg").unwrap();
+            builder
+                .add_cover_image("images/cover.jpg", cover.as_slice(), "image/jpeg")
+                .unwrap();
         }
         builder.metadata("title", title).unwrap();
         builder.metadata("lang", "zho").unwrap();
-        comic.author_names.iter().for_each(|au| {builder.metadata("author", &(*au)[..]).unwrap(); ()} );
-        comic.subjects.iter().for_each(|su| {builder.metadata("subject", &(*su)[..]).unwrap(); ()} );
+        comic.author_names.iter().for_each(|au| {
+            builder.metadata("author", &(*au)[..]).unwrap();
+            ()
+        });
+        comic.subjects.iter().for_each(|su| {
+            builder.metadata("subject", &(*su)[..]).unwrap();
+            ()
+        });
         match ord {
-            Some(ord) => { builder.metadata("description", &format!("{}/{}", comic.title, ord)).unwrap(); () }
-            None => { builder.metadata("description", &format!("{}", comic.title)).unwrap(); () }
+            Some(ord) => {
+                builder
+                    .metadata("description", &format!("{}/{}", comic.title, ord))
+                    .unwrap();
+                ()
+            }
+            None => {
+                builder
+                    .metadata("description", &format!("{}", comic.title))
+                    .unwrap();
+                ()
+            }
         }
 
         builder.stylesheet(STYLE.as_bytes()).unwrap();
@@ -186,7 +246,13 @@ impl ExportFormat for Epub {
         "epub"
     }
 
-    fn export_single<P: AsRef<Path>>(&self, comic: &ComicCache, episode: &EpisodeCache, path: P, _config: &Config) {
+    fn export_single<P: AsRef<Path>>(
+        &self,
+        comic: &ComicCache,
+        episode: &EpisodeCache,
+        path: P,
+        _config: &Config,
+    ) {
         let mut builder = self.make_builder(&comic, &episode.title, &Some(episode.ord));
         for (i, path) in episode.get_paths().iter().enumerate() {
             let file = File::open(path).unwrap();
@@ -195,23 +261,38 @@ impl ExportFormat for Epub {
             buf_reader.read_to_end(&mut buf).unwrap();
             let file_name = path.file_name().unwrap().to_str().unwrap();
             let mime = Self::guess_mime(&file_name);
-            builder.add_resource(format!("images/{}/{}", episode.id, file_name), buf.as_slice(), mime).unwrap();
+            builder
+                .add_resource(
+                    format!("images/{}/{}", episode.id, file_name),
+                    buf.as_slice(),
+                    mime,
+                )
+                .unwrap();
 
-            builder.add_content(
-                EpubContent::new(
+            builder
+                .add_content(EpubContent::new(
                     format!("{}-{}.xhtml", episode.id, i),
                     CONTENT_TEMPLATE
                         .replace("{src}", &format!("images/{}/{}", episode.id, file_name))
-                        .replace("{alt}", &file_name).as_bytes(),
-                )
-            ).unwrap();
+                        .replace("{alt}", &file_name)
+                        .as_bytes(),
+                ))
+                .unwrap();
         }
         let file = File::create(path).unwrap();
         let mut buf_writer = BufWriter::new(file);
         builder.generate(&mut buf_writer).unwrap();
     }
 
-    fn export_multiple<P: AsRef<Path>>(&self, comic: &ComicCache, episodes: Vec<&EpisodeCache>, title: &str, path: P, _config: &Config, bar: &ProgressBar) {
+    fn export_multiple<P: AsRef<Path>>(
+        &self,
+        comic: &ComicCache,
+        episodes: Vec<&EpisodeCache>,
+        title: &str,
+        path: P,
+        _config: &Config,
+        bar: &ProgressBar,
+    ) {
         let mut builder = self.make_builder(&comic, title, &None);
         for ep in episodes {
             for (i, path) in ep.get_paths().iter().enumerate() {
@@ -221,17 +302,39 @@ impl ExportFormat for Epub {
                 buf_reader.read_to_end(&mut buf).unwrap();
                 let file_name = path.file_name().unwrap().to_str().unwrap();
                 let mime = Self::guess_mime(&file_name);
-                builder.add_resource(format!("images/{}/{}", ep.id, file_name), buf.as_slice(), mime).unwrap();
+                builder
+                    .add_resource(
+                        format!("images/{}/{}", ep.id, file_name),
+                        buf.as_slice(),
+                        mime,
+                    )
+                    .unwrap();
                 if i == 0 {
-                    builder.add_content(
-                        EpubContent::new(format!("{}.xhtml", ep.id), CONTENT_TEMPLATE.replace("{src}", &format!("./images/{}/{}", ep.id, file_name)).replace("{alt}", &file_name).as_bytes())
-                            .title(&ep.title)
-                    ).unwrap();
+                    builder
+                        .add_content(
+                            EpubContent::new(
+                                format!("{}.xhtml", ep.id),
+                                CONTENT_TEMPLATE
+                                    .replace("{src}", &format!("./images/{}/{}", ep.id, file_name))
+                                    .replace("{alt}", &file_name)
+                                    .as_bytes(),
+                            )
+                            .title(&ep.title),
+                        )
+                        .unwrap();
                 } else {
-                    builder.add_content(
-                        EpubContent::new(format!("{}-{}.xhtml", ep.id, i), CONTENT_TEMPLATE.replace("{src}", &format!("./images/{}/{}", ep.id, file_name)).replace("{alt}", &file_name).as_bytes())
-                            .level(2)
-                    ).unwrap();
+                    builder
+                        .add_content(
+                            EpubContent::new(
+                                format!("{}-{}.xhtml", ep.id, i),
+                                CONTENT_TEMPLATE
+                                    .replace("{src}", &format!("./images/{}/{}", ep.id, file_name))
+                                    .replace("{alt}", &file_name)
+                                    .as_bytes(),
+                            )
+                            .level(2),
+                        )
+                        .unwrap();
                 }
             }
             bar.inc(1);
@@ -361,8 +464,7 @@ pub struct Zip;
 
 impl Zip {
     fn make_options() -> FileOptions {
-        FileOptions::default()
-            .compression_method(CompressionMethod::Stored)
+        FileOptions::default().compression_method(CompressionMethod::Stored)
     }
 
     fn write_single_episode(episode: &EpisodeCache, zip: &mut ZipWriter<BufWriter<File>>) {
@@ -371,7 +473,11 @@ impl Zip {
             let mut file = File::open(path).unwrap();
             let mut buf = Vec::new();
             file.read_to_end(&mut buf).unwrap();
-            zip.start_file(format!("{} - {}/{}.{}", episode.ord, episode.title, i, file_ext), Zip::make_options()).unwrap();
+            zip.start_file(
+                format!("{} - {}/{}.{}", episode.ord, episode.title, i, file_ext),
+                Zip::make_options(),
+            )
+            .unwrap();
             zip.write_all(&buf).unwrap();
         }
     }
@@ -382,7 +488,13 @@ impl ExportFormat for Zip {
         "zip"
     }
 
-    fn export_single<P: AsRef<Path>>(&self, _: &ComicCache, episode: &EpisodeCache, path: P, _config: &Config) {
+    fn export_single<P: AsRef<Path>>(
+        &self,
+        _: &ComicCache,
+        episode: &EpisodeCache,
+        path: P,
+        _config: &Config,
+    ) {
         let file = File::create(path).unwrap();
         let writer = BufWriter::new(file);
         let mut zip = ZipWriter::new(writer);
@@ -390,7 +502,15 @@ impl ExportFormat for Zip {
         zip.finish().unwrap();
     }
 
-    fn export_multiple<P: AsRef<Path>>(&self, _: &ComicCache, episodes: Vec<&EpisodeCache>, _title: &str, path: P, _config: &Config, bar: &ProgressBar) {
+    fn export_multiple<P: AsRef<Path>>(
+        &self,
+        _: &ComicCache,
+        episodes: Vec<&EpisodeCache>,
+        _title: &str,
+        path: P,
+        _config: &Config,
+        bar: &ProgressBar,
+    ) {
         let file = File::create(path).unwrap();
         let writer = BufWriter::new(file);
         let mut zip = ZipWriter::new(writer);
@@ -423,9 +543,15 @@ struct CbzComicBookInfo {
 pub struct Cbz;
 
 impl Cbz {
-
     fn prepare_metadata(comic: &ComicCache, title: &str, ord: &Option<f64>) -> String {
-        let credits = comic.author_names.iter().map(|au| CbzCredit {person: au.to_string(), role: "Creator".to_string()} ).collect::<Vec<_>>();
+        let credits = comic
+            .author_names
+            .iter()
+            .map(|au| CbzCredit {
+                person: au.to_string(),
+                role: "Creator".to_string(),
+            })
+            .collect::<Vec<_>>();
         let info = CbzComicBookInfo {
             title: title.to_string(),
             series: comic.title.to_string(),
@@ -448,6 +574,56 @@ impl Cbz {
         j
     }
 
+    fn write_comicinfo_xml(comic: &ComicCache, title: &str, ord: &f64, zip: &mut ZipWriter<BufWriter<File>>) {
+        let mut comic_info = XMLElement::new("ComicInfo");
+        comic_info.add_attribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance");
+        comic_info.add_attribute("xmlns:xsd", "http://www.w3.org/2001/XMLSchema");
+        {
+            let mut xtitle = XMLElement::new("Title");
+            xtitle.add_text(title);
+            comic_info.add_child(xtitle);
+        }
+        {
+            let mut series = XMLElement::new("Series");
+            series.add_text(comic.title.to_string());
+            comic_info.add_child(series);
+        }
+        {
+            let mut number = XMLElement::new("Number");
+            number.add_text(ord);
+            comic_info.add_child(number);
+        }
+        for au in comic.author_names.iter() {
+            let mut writer = XMLElement::new("Writer");
+            writer.add_text(au);
+            comic_info.add_child(writer);
+        }
+        {
+            let mut publisher = XMLElement::new("Publisher");
+            publisher.add_text("哔哩哔哩漫画");
+            comic_info.add_child(publisher);
+        }
+        for g in comic.subjects.iter() {
+            let mut genre = XMLElement::new("Genre");
+            genre.add_text(g);
+            comic_info.add_child(genre);
+        }
+        {
+            let mut language = XMLElement::new("LanguageISO");
+            language.add_text("zh");
+            comic_info.add_child(language);
+        }
+
+        let mut buf = Vec::new();
+        comic_info.write(&mut buf).unwrap();
+        zip.start_file(
+            "ComicInfo.xml",
+            Zip::make_options(),
+        )
+        .unwrap();
+        zip.write_all(&buf).unwrap()
+    }
+
     fn write_single_episode(&self, episode: &EpisodeCache, zip: &mut ZipWriter<BufWriter<File>>) {
         Zip::write_single_episode(episode, zip)
     }
@@ -458,17 +634,35 @@ impl ExportFormat for Cbz {
         "cbz"
     }
 
-    fn export_single<P: AsRef<Path>>(&self, comic: &ComicCache, episode: &EpisodeCache, path: P, _config: &Config) {
+    fn export_single<P: AsRef<Path>>(
+        &self,
+        comic: &ComicCache,
+        episode: &EpisodeCache,
+        path: P,
+        _config: &Config,
+    ) {
         let file = File::create(path).unwrap();
         let writer = BufWriter::new(file);
         let mut zip = ZipWriter::new(writer);
+
         let metadata = Cbz::prepare_metadata(comic, &episode.title, &Some(episode.ord));
         zip.set_comment(metadata);
+
+        Cbz::write_comicinfo_xml(comic, &episode.title, &episode.ord, &mut zip);
+
         self.write_single_episode(episode, &mut zip);
         zip.finish().unwrap();
     }
 
-    fn export_multiple<P: AsRef<Path>>(&self, comic: &ComicCache, episodes: Vec<&EpisodeCache>, _title: &str, path: P, _config: &Config, bar: &ProgressBar) {
+    fn export_multiple<P: AsRef<Path>>(
+        &self,
+        comic: &ComicCache,
+        episodes: Vec<&EpisodeCache>,
+        _title: &str,
+        path: P,
+        _config: &Config,
+        bar: &ProgressBar,
+    ) {
         let file = File::create(path).unwrap();
         let writer = BufWriter::new(file);
         let mut zip = ZipWriter::new(writer);
@@ -481,7 +675,6 @@ impl ExportFormat for Cbz {
         zip.finish().unwrap();
     }
 }
-
 
 //
 // pub fn export_zip(
@@ -568,19 +761,29 @@ impl Item<'_> {
                 if min == max {
                     return format!("{}. {}", min, eps[0].title);
                 }
-                format!("{}-{}. {}-{}", min, max, eps[0].title, eps.last().unwrap().title)
+                format!(
+                    "{}-{}. {}-{}",
+                    min,
+                    max,
+                    eps[0].title,
+                    eps.last().unwrap().title
+                )
             }
         }
     }
 }
 
-pub fn export(comic: &ComicCache, items: Vec<Item>, config: &Config, out_dir: &PathBuf, format: &ExportFormatEnum) {
+pub fn export(
+    comic: &ComicCache,
+    items: Vec<Item>,
+    config: &Config,
+    out_dir: &PathBuf,
+    format: &ExportFormatEnum,
+) {
     let m = MultiProgress::new();
 
     let bar_style = indicatif::ProgressStyle::default_bar()
-        .template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}"
-        )
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
         .progress_chars("##-");
     let overall_bar = m.add(ProgressBar::new(items.len() as u64));
     let bar = m.add(ProgressBar::new(1));
